@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cari Jawaban Soal</title>
+<meta name="robots" content="noindex,nofollow">
+<style>
+:root{--bg:#f4f6fb;--card:#fff;--tx:#1b2030;--mut:#6a7388;--acc:#d71920;--acc2:#0b5cab;--bd:#e1e5ee;--hi:#fff1a8}
+@media(prefers-color-scheme:dark){:root{--bg:#0d0f14;--card:#171a22;--tx:#e8ebf3;--mut:#98a1b5;--bd:#272c38;--hi:#5a4b00;--acc2:#6db3ff}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 system-ui,Segoe UI,Roboto,sans-serif}
+header{padding:14px 16px;background:var(--acc);color:#fff;font-weight:700;font-size:17px}
+header small{display:block;font-weight:400;opacity:.85;font-size:12px}
+main{max-width:860px;margin:0 auto;padding:14px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:14px;margin-bottom:14px}
+textarea{width:100%;min-height:130px;border:1px solid var(--bd);border-radius:10px;padding:10px;background:transparent;color:inherit;font:inherit;resize:vertical}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+button{border:1px solid var(--bd);background:var(--card);color:inherit;border-radius:10px;padding:9px 14px;font:inherit;cursor:pointer}
+button.p{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}
+.q{font-weight:600;margin-bottom:8px}
+.ans{background:rgba(11,92,171,.09);border-left:4px solid var(--acc2);padding:8px 10px;border-radius:8px;margin:8px 0}
+.ans b{color:var(--acc2)}
+.src{border-top:1px dashed var(--bd);padding-top:8px;margin-top:8px}
+.src h4{margin:0 0 4px;font-size:13px;color:var(--mut);font-weight:600}
+.txt{white-space:pre-wrap;font-size:14px}
+mark{background:var(--hi);color:inherit;border-radius:3px;padding:0 1px}
+.sc{font-size:12px;color:var(--mut)}
+img.th{max-width:100%;border-radius:8px;border:1px solid var(--bd);margin-top:6px;cursor:zoom-in}
+.none{color:var(--mut)}
+#zoom{position:fixed;inset:0;background:rgba(0,0,0,.88);display:none;align-items:center;justify-content:center;z-index:9;padding:10px}
+#zoom img{max-width:100%;max-height:100%;border-radius:8px}
+.hint{font-size:12.5px;color:var(--mut);margin-top:8px}
+</style>
+</head>
+<body>
+<header>Cari Jawaban Soal<small id="info">Memuat data…</small></header>
+<main>
+  <div class="card">
+    <textarea id="q" spellcheck="false" placeholder="Tempel soal di sini (satu atau banyak soal sekaligus, boleh dengan pilihan a/b/c/d)…"></textarea>
+    <div class="row">
+      <button class="p" id="go">🔍 Cari Jawaban</button>
+      <button id="clr">Bersihkan</button>
+      <button id="paste">📋 Tempel &amp; Cari</button>
+    </div>
+    <div class="hint">Pencarian membaca materi (PDF/foto/PPTX) yang sudah di-OCR. Hasil OCR bisa keliru, jadi cek gambar halaman aslinya bila ragu.</div>
+  </div>
+  <div id="out"></div>
+</main>
+<div id="zoom"><img alt=""></div>
+
+<script src="data/materi.js"></script>
+<script>
+(function(){
+"use strict";
+const $=id=>document.getElementById(id);
+const DATA=(window.MATERI&&window.MATERI.items)||[];
+$("info").textContent=DATA.length?DATA.length+" halaman materi siap dicari":"Data materi kosong — jalankan materi_sync.py / workflow dulu";
+
+const STOP=new Set(("yang dan di ke dari untuk pada dengan atau adalah ini itu dalam akan dapat oleh sebagai tidak juga serta agar bila jika para sudah telah harus wajib saat setelah sebelum antara tersebut karena apa apakah berikut manakah mana benar salah pernyataan sesuai berapa bagaimana siapa kapan dimana yaitu ialah merupakan lebih paling saja pun lah kah nya").split(" "));
+const norm=s=>s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9\s]/g," ");
+const toks=s=>norm(s).split(/\s+/).filter(w=>w.length>2&&!STOP.has(w));
+function tri(w){const a=new Set();const p="^"+w+"$";for(let i=0;i<p.length-2;i++)a.add(p.substr(i,3));return a}
+function dice(a,b){let n=0;a.forEach(x=>{if(b.has(x))n++});return 2*n/(a.size+b.size)}
+
+// indeks
+const N=DATA.length,df=new Map();
+const docs=DATA.map(d=>{
+  const t=toks(d.sumber.replace(/[_-]/g," ")+" "+d.teks);
+  const set=new Set(t);set.forEach(w=>df.set(w,(df.get(w)||0)+1));
+  return {d,set,tri:new Map()};
+});
+const idf=w=>Math.log(1+(N-(df.get(w)||0)+.5)/((df.get(w)||0)+.5));
+const vocab=[...df.keys()];
+const vtri=new Map();
+function triOf(w){let t=vtri.get(w);if(!t){t=tri(w);vtri.set(w,t)}return t}
+// kata soal -> kata di materi (toleran salah OCR)
+const mapCache=new Map();
+function expand(w){
+  if(mapCache.has(w))return mapCache.get(w);
+  const out=[[w,1]];
+  if(w.length>=5){
+    const tw=triOf(w);
+    for(const v of vocab){if(v!==w&&Math.abs(v.length-w.length)<=2){const s=dice(tw,triOf(v));if(s>=.7)out.push([v,s*.8])}}
+  }
+  mapCache.set(w,out);return out;
+}
+function scoreDoc(qt,doc){
+  let s=0,hit=0;
+  for(const w of qt){
+    let best=0,bw=w;
+    for(const [v,wt] of expand(w)){if(doc.set.has(v)&&wt>best){best=wt;bw=v}}
+    if(best){s+=idf(bw)*best;hit++}
+  }
+  return {s:s*(0.5+0.5*hit/Math.max(qt.length,1)),hit};
+}
+function search(qtext,k=3){
+  const qt=[...new Set(toks(qtext))];
+  if(!qt.length)return {qt,res:[]};
+  const res=docs.map(doc=>({doc,...scoreDoc(qt,doc)})).filter(r=>r.s>0).sort((a,b)=>b.s-a.s);
+  return {qt,res:res.slice(0,k)};
+}
+
+// pecah banyak soal
+function splitQuestions(t){
+  t=t.replace(/\r/g,"").trim();
+  const parts=t.split(/\n\s*(?=\d{1,3}\s*[.)]\s)/).map(x=>x.trim()).filter(Boolean);
+  return parts.length>1?parts:[t];
+}
+function parseQ(block){
+  const lines=block.split("\n").map(l=>l.trim()).filter(Boolean);
+  const opts=[];const stem=[];
+  for(const l of lines){
+    const m=l.match(/^\(?([a-eA-E])[.)]\s*(.+)$/);
+    if(m)opts.push({k:m[1].toLowerCase(),t:m[2]});else if(!opts.length)stem.push(l);
+    else opts[opts.length-1].t+=" "+l;
+  }
+  return {stem:stem.join(" ").replace(/^\d{1,3}\s*[.)]\s*/,""),opts};
+}
+function esc(s){return s.replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}
+function bestLines(text,qt,n=4){
+  const lines=text.split("\n").map(l=>l.trim()).filter(l=>l.length>3);
+  const sc=lines.map((l,i)=>{const t=new Set(toks(l));let s=0;qt.forEach(w=>{for(const[v] of expand(w)){if(t.has(v)){s+=idf(v);break}}});return{l,i,s}});
+  const top=sc.filter(x=>x.s>0).sort((a,b)=>b.s-a.s).slice(0,n).sort((a,b)=>a.i-b.i);
+  return top.length?top.map(x=>x.l):lines.slice(0,n);
+}
+function hl(line,qt){
+  const want=new Set();qt.forEach(w=>expand(w).forEach(([v])=>want.add(v)));
+  return esc(line).replace(/[A-Za-z0-9À-ÿ]+/g,m=>want.has(norm(m).trim())?"<mark>"+m+"</mark>":m);
+}
+function optScore(opt,text){
+  const t=new Set(toks(text));const ot=[...new Set(toks(opt))];if(!ot.length)return 0;
+  let s=0;ot.forEach(w=>{for(const[v,wt] of expand(w)){if(t.has(v)){s+=idf(v)*wt;break}}});
+  return s/ot.length;
+}
+
+function render(q,i){
+  const {stem,opts}=parseQ(q);
+  const query=stem+" "+opts.map(o=>o.t).join(" ");
+  const {qt,res}=search(query,3);
+  let h='<div class="card"><div class="q">'+(i+1)+". "+esc(stem||q)+"</div>";
+  if(opts.length)h+='<div class="sc">'+opts.map(o=>esc(o.k+". "+o.t)).join("<br>")+"</div>";
+  if(!res.length){h+='<div class="none">Tidak ditemukan di materi.</div></div>';return h}
+  if(opts.length>=2){
+    const top=res[0].doc.d.teks+" "+(res[1]?res[1].doc.d.teks:"");
+    const sc=opts.map(o=>({o,s:optScore(o.t,res[0].doc.d.teks)*1.0+optScore(o.t,top)*.3})).sort((a,b)=>b.s-a.s);
+    if(sc[0].s>0&&sc[0].s>(sc[1]?sc[1].s:0)*1.05)h+='<div class="ans"><b>Kemungkinan jawaban: '+esc(sc[0].o.k)+".</b> "+esc(sc[0].o.t)+' <span class="sc">(perkiraan dari kecocokan kata, cek kutipan di bawah)</span></div>';
+    else h+='<div class="ans">Pilihan belum bisa dibedakan dari materi — cek kutipan di bawah.</div>';
+  }
+  res.forEach((r,j)=>{
+    const d=r.doc.d;
+    h+='<div class="src"><h4>'+(j?"Lainnya: ":"Paling cocok: ")+esc(d.sumber)+" · hal. "+d.hal+' <span class="sc">(skor '+r.s.toFixed(1)+")</span></h4>";
+    h+='<div class="txt">'+bestLines(d.teks,qt).map(l=>hl(l,qt)).join("\n")+"</div>";
+    if(d.img&&j<2)h+='<img class="th" loading="lazy" src="data/'+d.img+'" alt="halaman asli">';
+    h+="</div>";
+  });
+  return h+"</div>";
+}
+function run(){
+  const t=$("q").value.trim();
+  if(!t){$("out").innerHTML="";return}
+  if(!DATA.length){$("out").innerHTML='<div class="card none">Data materi kosong.</div>';return}
+  $("out").innerHTML=splitQuestions(t).map(render).join("");
+  $("out").scrollIntoView({behavior:"smooth"});
+}
+$("go").onclick=run;
+$("clr").onclick=()=>{$("q").value="";$("out").innerHTML="";$("q").focus()};
+$("paste").onclick=async()=>{try{$("q").value=await navigator.clipboard.readText();run()}catch(e){alert("Izin tempel ditolak. Tempel manual lalu tekan Cari.")}};
+$("q").addEventListener("keydown",e=>{if(e.key==="Enter"&&(e.ctrlKey||e.metaKey))run()});
+document.addEventListener("click",e=>{
+  if(e.target.classList.contains("th")){const z=$("zoom");z.firstElementChild.src=e.target.src;z.style.display="flex"}
+  else if($("zoom").contains(e.target))$("zoom").style.display="none";
+});
+})();
+</script>
+</body>
+</html>
