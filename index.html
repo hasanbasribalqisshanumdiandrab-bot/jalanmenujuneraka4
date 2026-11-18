@@ -45,6 +45,13 @@ img.th{max-width:100%;border-radius:8px;border:1px solid var(--bd);margin-top:6p
     <div class="hint">Pencarian membaca materi (PDF/foto/PPTX) yang sudah di-OCR. Hasil OCR bisa keliru, jadi cek gambar halaman aslinya bila ragu.</div>
   </div>
   <div id="out"></div>
+  <div class="card">
+    <div class="q">📷 Tambah materi dari gambar</div>
+    <input type="file" id="imgIn" accept="image/jpeg,image/png,image/webp" multiple hidden>
+    <div class="row" style="margin-top:0"><button id="imgBtn">Pilih gambar materi…</button><button id="exAll" style="display:none">Hapus semua tambahan</button></div>
+    <div class="hint" id="exMsg">Gambar dibaca (OCR) langsung di browser, lalu ikut dicari. Tersimpan di perangkat ini saja (tidak dikirim ke GitHub). Butuh internet saat pertama kali membaca gambar.</div>
+    <div id="exList" class="hint"></div>
+  </div>
 </main>
 <div id="zoom"><img alt=""></div>
 
@@ -53,8 +60,6 @@ img.th{max-width:100%;border-radius:8px;border:1px solid var(--bd);margin-top:6p
 (function(){
 "use strict";
 const $=id=>document.getElementById(id);
-const DATA=(window.MATERI&&window.MATERI.items)||[];
-$("info").textContent=DATA.length?DATA.length+" halaman materi siap dicari":"Data materi kosong — jalankan materi_sync.py / workflow dulu";
 
 const STOP=new Set(("yang dan di ke dari untuk pada dengan atau adalah ini itu dalam akan dapat oleh sebagai tidak juga serta agar bila jika para sudah telah harus wajib saat setelah sebelum antara tersebut karena apa apakah berikut manakah mana benar salah pernyataan sesuai berapa bagaimana siapa kapan dimana yaitu ialah merupakan lebih paling saja pun lah kah nya").split(" "));
 const norm=s=>s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9\s]/g," ");
@@ -62,19 +67,23 @@ const toks=s=>norm(s).split(/\s+/).filter(w=>w.length>2&&!STOP.has(w));
 function tri(w){const a=new Set();const p="^"+w+"$";for(let i=0;i<p.length-2;i++)a.add(p.substr(i,3));return a}
 function dice(a,b){let n=0;a.forEach(x=>{if(b.has(x))n++});return 2*n/(a.size+b.size)}
 
-// indeks
-const N=DATA.length,df=new Map();
-const docs=DATA.map(d=>{
-  const t=toks(d.sumber.replace(/[_-]/g," ")+" "+d.teks);
-  const set=new Set(t);set.forEach(w=>df.set(w,(df.get(w)||0)+1));
-  return {d,set,tri:new Map()};
-});
+// indeks (bisa dibangun ulang saat materi tambahan berubah)
+const BASE=(window.MATERI&&window.MATERI.items)||[];
+let EXTRA=[],DATA=[],N=0,df=new Map(),docs=[],vocab=[];
+const mapCache=new Map(),vtri=new Map();
+function buildIndex(){
+  DATA=BASE.concat(EXTRA);N=DATA.length;df=new Map();mapCache.clear();
+  docs=DATA.map(d=>{
+    const t=toks(d.sumber.replace(/[_-]/g," ")+" "+d.teks);
+    const set=new Set(t);set.forEach(w=>df.set(w,(df.get(w)||0)+1));
+    return {d,set};
+  });
+  vocab=[...df.keys()];
+  $("info").textContent=N?N+" halaman materi siap dicari"+(EXTRA.length?" (termasuk "+EXTRA.length+" tambahan di perangkat ini)":""):"Data materi kosong — jalankan materi_sync.py / workflow dulu";
+}
 const idf=w=>Math.log(1+(N-(df.get(w)||0)+.5)/((df.get(w)||0)+.5));
-const vocab=[...df.keys()];
-const vtri=new Map();
 function triOf(w){let t=vtri.get(w);if(!t){t=tri(w);vtri.set(w,t)}return t}
 // kata soal -> kata di materi (toleran salah OCR)
-const mapCache=new Map();
 function expand(w){
   if(mapCache.has(w))return mapCache.get(w);
   const out=[[w,1]];
@@ -150,7 +159,7 @@ function render(q,i){
     const d=r.doc.d;
     h+='<div class="src"><h4>'+(j?"Lainnya: ":"Paling cocok: ")+esc(d.sumber)+" · hal. "+d.hal+' <span class="sc">(skor '+r.s.toFixed(1)+")</span></h4>";
     h+='<div class="txt">'+bestLines(d.teks,qt).map(l=>hl(l,qt)).join("\n")+"</div>";
-    if(d.img&&j<2)h+='<img class="th" loading="lazy" src="data/'+d.img+'" alt="halaman asli">';
+    if(d.img&&j<2)h+='<img class="th" loading="lazy" src="'+(d.img.indexOf("data:")===0?d.img:"data/"+d.img)+'" alt="halaman asli">';
     h+="</div>";
   });
   return h+"</div>";
@@ -162,6 +171,60 @@ function run(){
   $("out").innerHTML=splitQuestions(t).map(render).join("");
   $("out").scrollIntoView({behavior:"smooth"});
 }
+// ---------- materi tambahan dari gambar (OCR di browser)
+const idb={db:null,
+  open(){return new Promise(r=>{try{const q=indexedDB.open("materi-extra",1);q.onupgradeneeded=()=>q.result.createObjectStore("x",{keyPath:"id"});q.onsuccess=()=>{this.db=q.result;r()};q.onerror=()=>r()}catch(e){r()}})},
+  tx(m){return this.db.transaction("x",m).objectStore("x")},
+  all(){return new Promise(r=>{if(!this.db)return r([]);const q=this.tx("readonly").getAll();q.onsuccess=()=>r(q.result||[]);q.onerror=()=>r([])})},
+  put(o){return new Promise(r=>{if(!this.db)return r();const q=this.tx("readwrite").put(o);q.onsuccess=q.onerror=()=>r()})},
+  del(id){return new Promise(r=>{if(!this.db)return r();const q=this.tx("readwrite").delete(id);q.onsuccess=q.onerror=()=>r()})},
+  clear(){return new Promise(r=>{if(!this.db)return r();const q=this.tx("readwrite").clear();q.onsuccess=q.onerror=()=>r()})}};
+let tessP=null;
+function loadTess(){
+  if(window.Tesseract)return Promise.resolve();
+  return tessP||(tessP=new Promise((ok,no)=>{const s=document.createElement("script");
+    s.src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js";
+    s.onload=ok;s.onerror=()=>{tessP=null;no(new Error("Gagal memuat mesin OCR (cek internet)"))};document.head.appendChild(s)}));
+}
+function fileToCanvas(file,maxw){
+  return new Promise((ok,no)=>{const u=URL.createObjectURL(file),im=new Image();
+    im.onload=()=>{const k=Math.min(1,maxw/im.width),c=document.createElement("canvas");
+      c.width=Math.round(im.width*k);c.height=Math.round(im.height*k);c.getContext("2d").drawImage(im,0,0,c.width,c.height);URL.revokeObjectURL(u);ok(c)};
+    im.onerror=()=>{URL.revokeObjectURL(u);no(new Error("Gambar tidak bisa dibuka"))};im.src=u});
+}
+function renderExtra(){
+  $("exAll").style.display=EXTRA.length?"":"none";
+  $("exList").innerHTML=EXTRA.map(e=>'<div style="display:flex;gap:8px;align-items:center;margin-top:4px"><span style="flex:1">'+esc(e.sumber)+' · '+e.teks.length+' huruf</span><button data-del="'+e.id+'" style="padding:3px 9px">Hapus</button></div>').join("");
+}
+async function addImages(files){
+  const msg=t=>{$("exMsg").textContent=t};
+  try{msg("Memuat mesin OCR…");await loadTess();}catch(e){msg(e.message);return}
+  let ok=0;
+  for(let i=0;i<files.length;i++){
+    const f=files[i];
+    try{
+      msg("Membaca gambar "+(i+1)+"/"+files.length+": "+f.name+" …");
+      const big=await fileToCanvas(f,2000);
+      const r=await Tesseract.recognize(big,"ind+eng",{logger:m=>{if(m.status==="recognizing text")msg("Membaca "+(i+1)+"/"+files.length+": "+Math.round(m.progress*100)+"%")}});
+      const teks=(r.data.text||"").replace(/[ \t]+/g," ").replace(/\n{3,}/g,"\n\n").trim();
+      if(teks.length<15){msg("Teks tidak terbaca di "+f.name+" — dilewati.");continue}
+      const th=await fileToCanvas(f,1000);
+      const it={id:"x"+Date.now()+"_"+i,sumber:f.name.replace(/\.[^.]+$/,""),hal:1,teks:teks,img:th.toDataURL("image/jpeg",.7)};
+      await idb.put(it);EXTRA.push(it);ok++;
+    }catch(e){msg("Gagal pada "+f.name+": "+e.message)}
+  }
+  buildIndex();renderExtra();
+  msg(ok+" gambar ditambahkan ke materi dan siap dicari.");
+  if($("q").value.trim())run();
+}
+$("imgBtn").onclick=()=>$("imgIn").click();
+$("imgIn").onchange=e=>{const f=[...e.target.files];e.target.value="";if(f.length)addImages(f)};
+$("exList").addEventListener("click",async e=>{const id=e.target.getAttribute("data-del");if(!id)return;
+  await idb.del(id);EXTRA=EXTRA.filter(x=>x.id!==id);buildIndex();renderExtra()});
+$("exAll").onclick=async()=>{if(!confirm("Hapus semua materi tambahan di perangkat ini?"))return;await idb.clear();EXTRA=[];buildIndex();renderExtra()};
+buildIndex();
+idb.open().then(()=>idb.all()).then(a=>{EXTRA=a;buildIndex();renderExtra()});
+
 $("go").onclick=run;
 $("clr").onclick=()=>{$("q").value="";$("out").innerHTML="";$("q").focus()};
 $("paste").onclick=async()=>{try{$("q").value=await navigator.clipboard.readText();run()}catch(e){alert("Izin tempel ditolak. Tempel manual lalu tekan Cari.")}};
